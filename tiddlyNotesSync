@@ -1,0 +1,781 @@
+<div id="storeArea">
+<div title="tiddlyNotesSync" creator="B-APP" created="201108231217" modified="201108231221" tags="systemConfig excludeLists" changecount="2">
+<pre>version.extensions.tiddlyNotesSync = { major: 1, minor: 1, revision: 0, date: new Date( 2011, 11, 02 ) };
+
+if ( config.options.txtDropBoxFolder === undefined ) {
+    config.options.txtDropBoxFolder = "";
+}
+
+if ( config.options.txtTiddlyNotesInterval === undefined ) {
+    config.options.txtTiddlyNotesInterval = "10";
+}
+
+function SyncLogEntry() {
+    this.hasChanges = false;
+    this.fields = {};
+    this.downloads = new Array();
+    this.uploads = new Array();
+    this.externalCreations = new Array();
+    this.externalDeletions = new Array();
+    this.externalModifications = new Array();
+    this.internalCreations = new Array();
+    this.internalDeletions = new Array();
+    this.internalModifications = new Array();
+}
+
+SyncLogEntry.prototype.addDownload = function( inTiddler ) {
+    this.downloads.push( inTiddler.title );
+};
+
+SyncLogEntry.prototype.addExternalConflictModification = function( inInternalTiddler, inExternalTiddler ) {
+    this.hasChanges = true;
+    this.externalModifications.push( {
+        name: inInternalTiddler.title,
+        reason: "Conflict detected. TiddlyWiki modified(" + inInternalTiddler.fields[ 'notelymodified' ] +
+                ") was greater than Dropbox modified(" + inExternalTiddler.fields[ 'noteleymodified' ] + ")"
+    } );
+};
+
+SyncLogEntry.prototype.addExternalCreation = function( inTiddler ) {
+    this.hasChanges = true;
+    var theReason = null;
+    var theType = this.fields[ 'type' ];
+    if ( theType == "SyncKeepBoth" ) {
+        theReason = "Initial - Merge Synchronisation";
+    } else if ( theType == "SyncKeepLocal" ) {
+        theReason = "Initial - Client Synchronisation";
+    } else {
+        theReason = "TiddlyWiki created(" + inTiddler.fields[ 'tiddlynotesmodified' ] +
+                    ") is later than TiddlyWiki last Sync(" + this.fields[ 'lastSynchronisedBefore' ] + ")";
+    }
+    this.externalCreations.push( { 
+        name: inTiddler.title,
+        reason: theReason
+    } );
+};
+
+SyncLogEntry.prototype.addExternalDeletion = function( inTiddler ) {
+    this.hasChanges = true;
+    this.externalDeletions.push( {
+        name: inTiddler.title,
+        reason: "Dropbox created(" + inTiddler.fields[ 'tiddlynotesmodified' ] +
+            ") is earlier than TiddlyWiki last Sync(" + this.fields[ 'lastSynchronisedBefore' ] + ")"
+    } );
+};
+
+SyncLogEntry.prototype.addExternalModification = function( inInternalTiddler, inExternalTiddler ) {
+    this.hasChanges = true;
+    this.externalModifications.push( {
+        name: inInternalTiddler.title,
+        reason: "TiddlyWiki changecount(" + inInternalTiddler.fields[ 'changecount' ] + ") is greater than " +
+                "Dropbox changecount (" + inExternalTiddler.fields[ 'changecount' ] + ")"
+    } );
+};
+
+SyncLogEntry.prototype.addInternalConflictModification = function( inInternalTiddler, inExternalTiddler ) {
+    this.hasChanges = true;
+    this.internalModifications.push( {
+        name: inInternalTiddler.title,
+        reason: "Conflict detected. Dropbox modified(" + inExternalTiddler.fields[ 'notelymodified' ] +
+                ") was greater than TiddlyWiki modified(" + inInternalTiddler.fields[ 'notelymodified' ] + ")"
+    } );
+};
+
+SyncLogEntry.prototype.addInternalCreation = function( inTiddler ) {
+    this.hasChanges = true;
+    var theReason = null;
+    var theType = this.fields[ 'type' ];
+    if ( theType == "SyncKeepBoth" ) {
+        theReason = "Initial - Merge Synchronisation";
+    } else if ( theType == "SyncKeepRemote" ) {
+        theReason = "Initial - Server Synchronisation";
+    } else {
+        theReason = "Dropbox created(" + inTiddler.fields[ 'tiddlynotesmodified' ] +
+                    ") is later than TiddlyWiki last Sync(" + this.fields[ 'lastSynchronisedBefore' ] + ")";
+    }
+    this.internalCreations.push( {
+        name: inTiddler.title, 
+        reason: theReason
+    } );
+};
+
+SyncLogEntry.prototype.addInternalDeletion = function( inTiddler ) {
+    this.hasChanges = true;
+    var theReason = null;
+    var theType = this.fields[ 'type' ];
+    if ( theType == "SyncKeepRemote" ) {
+        theReason = "Initial - Server Synchronisation";
+    } else {
+        theReason = "Dropbox created(" + inTiddler.created + ") is earlier than TiddlyWiki last Sync(" +
+                    this.fields[ 'lastSynchronisedBefore' ] + ")";
+    }
+    this.internalDeletions.push( {
+       name: inTiddler.title,
+       reason: theReason
+    } );
+};
+
+SyncLogEntry.prototype.addInternalModification = function( inInternalTiddler, inExternalTiddler ) {
+    this.hasChanges = true;
+    this.internalModifications.push( {
+        name: inInternalTiddler.title,
+        reason: "Dropbox changecount(" + inExternalTiddler.fields[ 'changecount' ] + ") is greater than " +
+                "TiddlyWiki changecount(" + inInternalTiddler.fields[ 'changecount' ] + ")"
+    } );
+};
+
+SyncLogEntry.prototype.addUpload = function( inTiddler ) {
+    this.uploads.push( inTiddler.title );
+};
+
+SyncLogEntry.prototype.needsSave = function() {
+    return this.hasChanges;
+};
+
+SyncLogEntry.prototype.removeOldLogs = function() {
+    var theDate =new Date();
+    theDate.setDate( theDate.getDate() - 30 );
+    var theTiddlers = store.getTiddlers( "systemConfig" );
+    for ( var theIndex = 0; theIndex &lt; theTiddlers.length; theIndex ++ ) {
+        var theTiddler = theTiddlers[ theIndex ];
+        if ( theTiddler.isTagged( "tiddlyNotesLog" ) &amp;&amp;
+             theTiddler.created &lt; theDate ) {
+            store.removeTiddler( theTiddler.title );
+        }
+    }
+};
+
+SyncLogEntry.prototype.save = function() {
+    this.removeOldLogs();
+    var theText = "Type:" + this.fields[ 'type' ] + "\n"  +
+        "Start Timestamp:" + this.fields[ 'startTimestamp' ] + "\n" +
+        "End Timestamp:" + this.fields[ 'endTimestamp' ] + "\n" +
+        "Initial TiddlyWiki Last Sync Timestamp:" + this.fields[ 'lastSynchronisedBefore' ] + "\n" +
+        "Initial Dropbox Last Sync Timestamp:" + this.fields[ 'externalLastSynchronised' ] + "\n";
+ 
+    theText += "\nChange Summary:\n" +
+        "Last Sync Timestamp:" + this.fields[ 'lastSynchronisedAfter' ] + "\n" +
+        "TiddlyWiki Tiddlers added:" + this.internalCreations.length + "\n" +
+        "TiddlyWiki Tiddlers removed:" + this.internalDeletions.length + "\n" +
+        "TiddlyWiki Tiddlers modified:" + this.internalModifications.length + "\n" +
+        "Dropbox Tiddlers added:" + this.externalCreations.length + "\n" +
+        "Dropbox Tiddlers removed:" + this.externalDeletions.length + "\n" +
+        "Dropbox Tiddlers modified:" + this.externalModifications.length + "\n";
+
+    theText += "\nChange Details:\n";
+    if ( this.internalCreations.length &gt; 0 ) {
+        theText += "Tiddlers added to TiddlyWiki\n";
+        for ( var theIndex = 0; theIndex &lt; this.internalCreations.length; theIndex ++ ) {
+            theText += this.internalCreations[ theIndex ].name + "\n" +
+                      this.internalCreations[ theIndex ].reason + "\n";
+        }
+    }
+    if ( this.internalDeletions.length &gt; 0 ) {
+        theText += "Tiddlers removed from TiddlyWiki\n";
+        for ( var theIndex = 0; theIndex &lt; this.internalDeletions.length; theIndex ++ ) {
+            theText += this.internalDeletions[ theIndex ].name + "\n" +
+                       this.internalDeletions[ theIndex ].reason + "\n";
+        }
+    }
+    if ( this.internalModifications.length &gt; 0 ) {
+        theText += "Tiddlers modified in TiddlyWiki\n";
+        for ( var theIndex = 0; theIndex &lt; this.internalModifications.length; theIndex ++ ) {
+            theText += this.internalModifications[ theIndex ].name + "\n" +
+                       this.internalModifications[ theIndex ].reason + "\n";
+        }
+    }
+    if ( this.externalCreations.length &gt; 0 ) {
+        theText += "Tiddlers added to Dropbox\n";
+        for ( var theIndex = 0; theIndex &lt; this.externalCreations.length; theIndex ++ ) {
+            theText += this.externalCreations[ theIndex ].name + "\n" +
+                       this.externalCreations[ theIndex ].reason + "\n";
+        }
+    }
+    if ( this.externalDeletions.length &gt; 0 ) {
+        theText += "Tiddlers removed from Dropbox\n";
+        for ( var theIndex = 0; theIndex &lt; this.externalDeletions.length; theIndex ++ ) {
+            theText += this.externalDeletions[ theIndex ].name + "\n" +
+                       this.externalDeletions[ theIndex ].reason + "\n";
+        }
+    }
+    if ( this.externalModifications.length &gt; 0 ) {
+        theText += "Tiddlers modified in Dropbox\n";
+        for ( var theIndex = 0; theIndex &lt; this.externalModifications.length; theIndex ++ ) {
+            theText += this.externalModifications[ theIndex ].name + "\n" +
+                       this.externalModifications[ theIndex ].reason + "\n";
+        }
+    }
+    if ( this.downloads.length &gt; 0 ) {
+        theText += "\nDownloaded Tiddlers\n";
+        for ( var theIndex = 0; theIndex &lt; this.downloads.length; theIndex ++ ) {
+            theText += this.downloads[ theIndex ] + "\n";
+        }
+    }
+    if ( this.uploads.length &gt;0 ) {
+        theText += "\nUploaded Tiddlers\n";
+        for ( var theIndex = 0; theIndex &lt; this.uploads.length; theIndex ++ ) {
+            theText += this.uploads[ theIndex ] + "\n";
+        }
+    }
+    var theTitle = "tiddlyNotesLog - " + this.fields[ 'startTimestamp' ];
+    var theDate = new Date();
+    store.saveTiddler( theTitle,
+                       theTitle,
+                       theText,
+                       &quot;B-APP&quot;,
+                       theDate,
+                       "excludeLists tiddlyNotesLog",
+                       null,
+                       false,
+                       theDate,
+                       &quot;B-APP&quot; );
+    autoSaveChanges( null );
+};
+
+SyncLogEntry.prototype.setField = function( inName, inValue ) {
+    this.fields[ inName ] = inValue;
+};
+
+
+function SyncStore() {
+    if ( config.browser.isGecko &amp;&amp; config.browser.isWindows ) {
+        this.mPath = config.options.txtDropBoxFolder + &quot;\\tiddlyNotes.xml&quot;;
+    } else {
+        this.mPath = config.options.txtDropBoxFolder + &quot;/tiddlyNotes.xml&quot;;
+    }
+    this.initStore();
+}
+
+SyncStore.prototype.getStore = function() {
+    return this.mStore;
+}
+
+SyncStore.prototype.initStore = function() {
+    var theExternalWiki = loadFile( this.mPath );
+    if( window.netscape !== undefined ) {
+        theExternalWiki = convertUTF8ToUnicode( theExternalWiki );
+    }
+    this.mStore = new TiddlyWiki();
+    this.mStore.importTiddlyWiki( theExternalWiki );
+};
+
+SyncStore.prototype.update = function() {
+    var theStore = new TiddlyWiki();
+    var theTiddlers = store.getTiddlers( &quot;systemConfig&quot; );
+    for ( var theIndex = 0; theIndex &lt; theTiddlers.length; theIndex ++ ) {
+        var theTiddler = theTiddlers[ theIndex ];
+        if ( this.shouldExclude( theTiddler ) ) {
+            continue;
+        }
+        theStore.addTiddler( theTiddler );
+    }
+    var theContent = '&lt;div id=&quot;storeArea&quot;&gt;';
+    theContent += convertUnicodeToFileFormat(
+        theStore.getSaver().externalize( theStore ) );
+    theContent += &quot;&lt;/div&gt;&quot;;
+    saveFile( this.mPath, theContent );
+};
+
+SyncStore.prototype.shouldExclude = function( inTiddler ) {
+    if ( inTiddler == null ) {
+        return false;
+    }
+    if (store.isShadowTiddler( inTiddler.title ) ) {
+        return true;
+    }
+    if ( inTiddler.title == &quot;tiddlyNotesSync&quot; ) {
+        return true;
+    }
+    if ( inTiddler.isTagged( &quot;tiddlyNotesLog&quot; ) ||
+         inTiddler.isTagged( &quot;tiddlyNotesDeleted&quot; ) || 
+         inTiddler.isTagged( &quot;tiddlyNotesExclude&quot; ) ) {
+        return true;
+    }
+    return false;
+};
+
+config.macros.tiddlyNotesSync = {
+    mTimer: null,
+    mSyncing: false,
+    doSaveLabel: "save",
+    doSavePrompt: "Save settings",
+    doSyncLabel: "synchronize",
+    doSyncPrompt: "Save settings and synchronize with tiddlyNotes",
+    wizardTitle: "tiddlyNotes Synchronization",
+    step1Title: "Configure your synchronization settings",
+    step1Html: "&lt;style type='text/css'&gt;smallblue {color:blue;font-size:85%}&lt;/style&gt;&lt;table border='0'&gt;&lt;tr align='left' valign='top'&gt;&lt;td&gt;Dropbox Location:&lt;/td&gt;&lt;td&gt;&lt;input name='txtDropBoxFolder' type='text' align='right'&gt;&lt;/input&gt;&lt;br&gt;&lt;smallblue&gt;Enter the name of the folder where Dropbox places your synchronized files. You can disable synchronization by leaving this field blank.&lt;/smallblue&gt;&lt;/td&gt;&lt;/tr&gt;&lt;tr&gt;&lt;td&gt;Synchronization Interval:&lt;/td&gt;&lt;td&gt;&lt;input name='txtTiddlyNotesInterval' type='text' align='right'&gt;&lt;/input&gt;&lt;br&gt;&lt;smallblue&gt;How often (in minutes) would you like automatic synchronization to take place? You can disable automatic synchronization leaving this field blank.&lt;/smallblue&gt;&lt;/td&gt;&lt;/tr&gt;&lt;/table&gt;",
+    step1Buttons: [],
+    step2Title: "Initial Synchronization",
+    step2Html: "&lt;style type='text/css'&gt;smallblue {color:blue;font-size:85%}&lt;/style&gt;You have modified your Dropbox location so your tiddlers will now be synchronized with your Dropbox account.&lt;br&gt;We'd like to understand how you want to handle this first synchronization. Please choose one of the following options.&lt;br&gt;&lt;br&gt;&lt;table border='0'&gt;&lt;tr align='left'&gt;&lt;td width='100'&gt;&lt;input type='radio' name='syncType' value='SyncKeepBoth' checked='true'&gt;Merge&lt;/input&gt;&lt;/td&gt;&lt;td&gt;&lt;smallblue&gt;Recommended:&lt;br&gt;Synchronize your TiddlyWiki tiddlers with the tiddlers in your Dropbox account&lt;/smallblue&gt;&lt;/td&gt;&lt;/tr&gt;&lt;tr align='left'&gt;&lt;td width='100'&gt;&lt;input type='radio' name='syncType' value='SyncKeepRemote'/&gt;Server&lt;/input&gt;&lt;/td&gt;&lt;td&gt;&lt;smallblue&gt;Erase all your TiddlyWiki tiddlers and replace them with the tiddlers in your Dropbox account&lt;/smallblue&gt;&lt;/td&gt;&lt;/tr&gt;&lt;tr align='left'&gt;&lt;td width='100'&gt;&lt;input type='radio' name='syncType' value='SyncKeepLocal'/&gt;Client&lt;/input&gt;&lt;/td&gt;&lt;td&gt;&lt;smallblue&gt;Erase all the tiddlers in your Dropbox account and replace them with your TiddlyWiki tiddlers&lt;/smallblue&gt;&lt;/td&gt;&lt;/tr&gt;&lt;/table&gt;",
+    step2Buttons: [],
+    invalidDropBoxFolder: "Error: An invalid Dropbox Location was specified.",
+    invalidTiddlyNotesInterval: "Error: An invalid Synchronization Interval was specified.",
+    mNewDropBoxFolder: null,
+    mNewTiddlyNotesInterval: null,
+    mInternalStoreUpdated: false,
+    mDeletedSuffix: " - deletion recorded for tiddlyNotes",
+    addMenuItem: function() {
+        if ( backstage == null || backstage.toolbar == null ) {
+            setTimeout( &quot;config.macros.tiddlyNotesSync.addMenuItem()&quot;, 1 * 1000 );
+        } else {
+            var theTask = {
+                text: &quot;tiddlyNotes&quot; + glyph(&quot;downTriangle&quot;),
+                tooltip: &quot;Synchronize your tiddlers with tiddlyNotes&quot;,
+                content: '&lt;&lt;tiddlyNotesSync&gt;&gt;'
+            };
+            var theButton = createTiddlyButton(
+                backstage.toolbar, theTask.text, theTask.tooltip,
+                backstage.onClickTab, &quot;backstageTab&quot; );
+            jQuery( theButton ).addClass( &quot;backstageTask&quot; );
+            theButton.setAttribute( &quot;task&quot;, &quot;tiddlyNotesSync&quot; );
+            merge( config.tasks, { &quot;tiddlyNotesSync&quot;: theTask } );
+        }
+    },
+    clearInternalStore: function( inLogEntry ) {
+        var theInternalTiddlers =
+            store.getTiddlers( &quot;title&quot;, &quot;systemConfig&quot; );
+        for ( var theIndex = 0; theIndex &lt; theInternalTiddlers.length; theIndex ++ ) {
+            var theInternalTiddler = theInternalTiddlers[ theIndex ];
+            inLogEntry.addInternalDeletion( theInternalTiddler );
+            store.removeTiddler( theInternalTiddler.title );
+            story.closeTiddler( theInternalTiddler.title,true );
+        }
+        if ( theInternalTiddlers.length > 0 ) {
+            config.macros.tiddlyNotesSync.mInternalStoreUpdated = true;
+        }
+    },
+    createTiddler: function( inTiddler ) {
+            var theTiddler = store.saveTiddler(
+                inTiddler.title,
+                inTiddler.title,
+                inTiddler.text,
+                inTiddler.modifier,
+                inTiddler.modified,
+                inTiddler.tags,
+                inTiddler.fields,
+                false,
+                inTiddler.created,
+                inTiddler.creator );
+            theTiddler.fields = inTiddler.fields;
+            config.macros.tiddlyNotesSync.mInternalStoreUpdated = true;
+    },
+    date2String: function( inDate ) {
+        return inDate.getUTCFullYear() + String.zeroPad(inDate.getUTCMonth()+1,2) + 
+               String.zeroPad(inDate.getUTCDate(),2) +
+               String.zeroPad(inDate.getUTCHours(),2) +
+               String.zeroPad(inDate.getUTCMinutes(),2) +
+               String.zeroPad(inDate.getUTCSeconds(),2);
+    }, 
+    getLastSynchronised: function() {
+        var theTimestamp = null;
+        var theTiddler = store.getTiddler( &quot;tiddlyNotesLastSynchronised&quot; );
+        if ( theTiddler != null ) {
+            theTimestamp = Date.convertFromYYYYMMDDHHMMSS( theTiddler.fields[ 'tiddlynotesmodified' ] );
+        }
+        if ( theTimestamp == null ) {
+            theTimestamp = new Date( 0 );
+        }
+        return theTimestamp;
+    },
+    handler: function( place, macroName, params, wikifier, paramString, tiddler ) {
+        var me = config.macros.tiddlyNotesSync;
+        me.step1Buttons = [ { caption: this.doSaveLabel,
+                              tooltip: this.doSavePrompt,
+                              onClick: me.onDoSave },
+                            { caption: this.doSyncLabel,
+                              tooltip: this.doSyncPrompt,
+                              onClick: me.onDoSync } ];
+        me.step2Buttons = [ { caption: this.doSyncLabel,
+                              tooltip: this.doSyncPrompt,
+                              onClick: me.onDoInitialSync } ];
+	var theWizard = new Wizard();
+	theWizard.createWizard( place, this.wizardTitle );
+	theWizard.addStep( this.step1Title, this.step1Html );
+        var theElement = theWizard.getElement( "txtDropBoxFolder" );
+        theElement.value = config.options.txtDropBoxFolder;
+        theElement.onchange = me.onFolderChange;
+        theElement = theWizard.getElement( "txtTiddlyNotesInterval" );
+        theElement.value = config.options.txtTiddlyNotesInterval;
+        theElement.onchange = me.onIntervalChange;
+        theWizard.setButtons( me.step1Buttons );
+    },
+    init: function() {
+        var me = config.macros.tiddlyNotesSync;
+        me.addMenuItem();
+        store.addNotification( null, me.listener );
+        me.synchronise( "SyncMerge" );
+    },
+    isConflicted: function( inInternalTiddler, inExternalTiddler ) {
+        return inInternalTiddler.tags == inExternalTiddler.tags &amp;&amp;
+               inInternalTiddler.text == inExternalTiddler.text;
+    },
+    isDeleted: function( inTiddler ) {
+        var theDeletion = store.getTiddler( inTiddler.title + config.macros.tiddlyNotesSync.mDeletedSuffix );
+        if ( theDeletion == null ) {
+            return false;
+        }
+        var theDeletedModified = Date.convertFromYYYYMMDDHHMMSS( theDeletion.fields[ 'tiddlynotesmodified' ] );
+        var theModified = inTiddler.fields[ 'tiddlynotesmodified' ];
+        if ( theModified != null ) {
+            theModified = Date.convertFromYYYYMMDDHHMMSS( theModified );
+        } else {
+            theModified = inTiddler.modified;
+            if ( theModified == null ) {
+                theModified = inTiddler.created;
+            }
+        }
+        return theDeletedModified &gt; theModified;
+    },
+    listener: function( inName ) {
+        var me = config.macros.tiddlyNotesSync;
+        var theDeletionName = inName + me.mDeletedSuffix;
+        var theTiddler = store.getTiddler( inName );
+        if ( theTiddler != null ) {
+            theTiddler.fields[ 'tiddlynotesmodified' ] = me.date2String( new Date() );
+            var theDeletedTiddler = store.getTiddler( theDeletionName );
+            if ( theDeletedTiddler != null ) {
+                store.removeTiddler( theDeletionName );
+            }
+        } else if ( inName != "New Tiddler" &amp;&amp; config.options.txtDropBoxFolder != "" &amp;&amp; inName.indexOf( me.mDeletedSuffix ) == -1 ) {
+            var theTiddler = new Tiddler();
+            theTiddler.title = theDeletionName;
+            theTiddler.text = &quot;This tiddler is needed for tiddlyNotesSync to operate correctly. Please don't modify&quot;;
+            theTiddler.created = new Date();
+            theTiddler.creator = &quot;B-APP&quot;
+            theTiddler.tags = &quot;excludeLists tiddlyNotesDeleted&quot;;
+            theTiddler.fields[ 'tiddlynotesmodified' ] = me.date2String( new Date() );
+            me.createTiddler( theTiddler );
+        }
+        me.saveWithoutBackup();
+        me.synchronise( &quot;SyncMerge&quot; );
+    },
+    onDoAction: function( inElem, inAction ) {
+        var me = config.macros.tiddlyNotesSync;
+        if ( inAction == "save" ) {
+            if ( me.mNewDropBoxFolder == null &amp;&amp; me.mNewTiddlyNotesInterval == null ) {
+                backstage.hidePanel();
+                return;
+            }
+        }
+        var theWizard = new Wizard( inElem );
+        if ( inAction == "saveAndSync" ) {
+            // if a sync has been requested we need to validate the dropbox folder
+            var theDropBoxFolder = me.mNewDropBoxFolder == null ?
+                config.options.txtDropBoxFolder : me.mNewDropBoxFolder;
+            if ( theDropBoxFolder == "" ) {
+                theWizard.setButtons( me.step1Buttons, me.invalidDropBoxFolder );
+                return;
+            }
+        }
+        // validate the sync interval
+        var theInterval = me.mNewTiddlyNotesInterval == null ?
+            config.options.txtTiddlyNotesInterval : me.mNewTiddlyNotesInterval;
+        if ( theInterval != "" ) {
+            var theIntInterval = parseInt( theInterval );
+            if ( isNaN( theInterval ) || theInterval &lt;= 0 ) {
+                theWizard.setButtons( me.step1Buttons, me.invalidTiddlyNotesInterval );
+                return;
+            }
+        }
+        if ( me.mNewDropBoxFolder != null &amp;&amp; me.mNewDropBoxFolder != "" ) {
+	    theWizard.addStep( this.step2Title, this.step2Html );
+            theWizard.setButtons( me.step2Buttons );
+        } else {
+            backstage.hidePanel();
+            me.saveOptions();
+            if ( inAction == "saveAndSync" ) {
+                me.synchronise( "SyncMerge" );
+            }
+        }
+    },
+    onDoInitialSync: function() {
+        var me = config.macros.tiddlyNotesSync;
+        var theSyncType = "SyncKeepBoth";
+        var theInputs = new Wizard( this ).getElement( "syncType" );
+        for ( var theIndex = 0 ; theIndex &lt; theInputs.length; theIndex ++ ) {
+            if ( theInputs[ theIndex ].checked ) {
+                theSyncType = theInputs[ theIndex ].value;
+                break;
+            }
+        }
+        backstage.hidePanel();
+        me.saveOptions();
+        me.synchronise( theSyncType );        
+    },
+    onDoSave: function() {
+        config.macros.tiddlyNotesSync.onDoAction( this, "save" );
+    },
+    onDoSync: function() {
+        config.macros.tiddlyNotesSync.onDoAction( this, "saveAndSync" );
+    },
+    onFolderChange: function() {
+        var me = config.macros.tiddlyNotesSync;
+        var theValue = new Wizard( this ).getElement( "txtDropBoxFolder" ).value.trim();
+        if ( theValue == config.options.txtDropBoxFolder ) {
+            me.mNewDropBoxFolder = null;
+        } else {
+            me.mNewDropBoxFolder = theValue;
+        }
+    },
+    onIntervalChange: function() {
+        var me = config.macros.tiddlyNotesSync;
+        var theValue = new Wizard( this ).getElement( "txtTiddlyNotesInterval" ).value.trim();
+        if ( theValue == config.options.txtTiddlyNotesInterval ) {
+            me.mNewTiddlyNotesInterval = null;
+        } else {
+            me.mNewTiddlyNotesInterval = theValue;
+        }
+    },
+    removeAllDeletions: function() {
+        var theTiddlers = store.getTiddlers( "systemConfig" );
+        for ( var theIndex = 0; theIndex &lt; theTiddlers.length; theIndex ++ ) {
+            var theTiddler = theTiddlers[ theIndex ];
+            if ( theTiddler.isTagged( "tiddlyNotesDeleted" ) ) {
+                store.removeTiddler( theTiddler.title );
+            }
+        }
+    },
+    reschedule: function() {
+        var me = config.macros.tiddlyNotesSync;
+        if ( me.mTimer != null ) {
+            clearTimeout( me.mTimer );
+            me.mTimer = null;
+        }
+        if ( config.options.txtTiddlyNotesInterval != "" ) {
+            me.mTimer = setTimeout( &quot;config.macros.tiddlyNotesSync.synchronise( 'SyncMerge' )&quot;,
+                                    config.options.txtTiddlyNotesInterval * 60 * 1000 );
+        }
+    },
+    saveOptions: function() {
+        var me = config.macros.tiddlyNotesSync;
+        if ( me.mNewDropBoxFolder != null ) {
+            config.options.txtDropBoxFolder = me.mNewDropBoxFolder;
+            me.removeAllDeletions();
+            me.saveWithoutBackup();
+        }
+        me.mNewDropBoxFolder = null;
+        var rescheduleNeeded = false;
+        if ( me.mNewTiddlyNotesInterval != null ) {
+            config.options.txtTiddlyNotesInterval = me.mNewTiddlyNotesInterval;
+            rescheduleNeeded = true;
+        }
+        me.mNewTiddlyNotesInterval = null;
+        saveCookie( null );
+        if ( rescheduleNeeded ) {
+            me.reschedule();
+        }
+    },
+    setLastSynchronised: function( inDate ) {
+        var me = config.macros.tiddlyNotesSync;
+        var theTiddler = store.getTiddler( &quot;tiddlyNotesLastSynchronised&quot; );
+        if ( theTiddler == null ) {
+            theTiddler = new Tiddler();
+            theTiddler.title = &quot;tiddlyNotesLastSynchronised&quot;;
+            theTiddler.text = &quot;This tiddler is needed for tiddlyNotesSync to operate correctly. Please don't modify&quot;;
+            theTiddler.created = inDate;
+            theTiddler.creator = &quot;B-APP&quot;
+            theTiddler.tags = &quot;excludeLists&quot;;
+            me.createTiddler( theTiddler );
+        }
+        theTiddler.modified = inDate;
+        theTiddler.modifier = &quot;B-APP&quot;
+        theTiddler.fields[ 'tiddlynotesmodified' ] = me.date2String( inDate );
+        theTiddler.fields[ 'changecount' ] = "1";
+    },
+    saveWithoutBackup: function() {
+        var backupsEnabled = config.options.chkSaveBackups;
+        config.options.chkSaveBackups = false;
+        autoSaveChanges( null );
+        config.options.chkSaveBackups = backupsEnabled;
+    },
+    synchronise: function( inSyncType ) {
+        var me = config.macros.tiddlyNotesSync;
+        if ( ! me.mSyncing ) {
+            me.mSyncing = true;
+            if ( me.mTimer != null ) {
+                clearTimeout( me.mTimer );
+                me.mTimer = null;
+            }
+            if ( config.options.txtDropBoxFolder != "" ) {
+                try {
+                    me.update( inSyncType );
+                } catch( theException ) {}
+            }
+            me.reschedule();
+            me.mSyncing = false;
+        }
+    },
+    update: function( inSyncType ) {
+        var me = config.macros.tiddlyNotesSync;
+        var theSyncLogEntry = new SyncLogEntry();
+        theSyncLogEntry.setField( 'type', inSyncType );
+        theSyncLogEntry.setField( 'startTimestamp', new Date() );
+        me.mInternalStoreUpdated = false;
+        var externalUpdateNeeded = true;
+        if ( inSyncType != "SyncMerge") {
+            me.setLastSynchronised( new Date( 0 ) );
+        }
+        var theSyncStore = new SyncStore();
+        if ( inSyncType != "SyncKeepLocal" ) {
+            if ( inSyncType == "SyncKeepRemote" ) {
+                me.clearInternalStore( theSyncLogEntry );
+            }
+            externalUpdateNeeded = me.updateInternal( inSyncType, theSyncStore, theSyncLogEntry );
+        }
+        var theLastSynchronised = new Date();
+        me.setLastSynchronised( theLastSynchronised );
+        theSyncLogEntry.setField( 'lastSynchronisedAfter', theLastSynchronised );
+
+        var backupsEnabled = config.options.chkSaveBackups;
+        if (!me.mInternalStoreUpdated) {
+            config.options.chkSaveBackups = false;
+        }
+        autoSaveChanges( null );
+        config.options.chkSaveBackups = backupsEnabled;
+
+        var isEmpty = story.isEmpty();
+        if ( isEmpty != null &amp;&amp; ! isEmpty ) {
+            story.refreshAllTiddlers( false );
+        }
+        if ( externalUpdateNeeded ) {
+            theSyncStore.update();
+        }
+        me.removeAllDeletions();
+        theSyncLogEntry.setField( 'endTimestamp', new Date() );
+        if ( theSyncLogEntry.needsSave() ) {
+            theSyncLogEntry.save();
+        }
+    },
+    updateInternal: function( inSyncType, inSyncStore, inLogEntry ) {
+        var me = config.macros.tiddlyNotesSync;
+        var externalUpdateNeeded = false;
+        var theInternalLastSynchronised = me.getLastSynchronised();
+        var theExternalLastSynchronised = null;
+        var theExternalStore = inSyncStore.getStore();
+        var theExternalTiddlers =
+            theExternalStore.getTiddlers( &quot;title&quot;, &quot;systemConfig&quot; );
+        inLogEntry.setField( 'lastSynchronisedBefore', theInternalLastSynchronised );
+        inLogEntry.setField( 'externalTiddlers', theExternalTiddlers );
+        for ( var theIndex = 0 ; theIndex &lt; theExternalTiddlers.length; theIndex ++ ) {
+            var theExternalTiddler = theExternalTiddlers[ theIndex ];
+            inLogEntry.addDownload( theExternalTiddler );
+            if ( theExternalTiddler.title == &quot;tiddlyNotesLastSynchronised&quot; ) {
+                theExternalLastSynchronised = Date.convertFromYYYYMMDDHHMMSS( theExternalTiddler.fields[ 'tiddlynotesmodified' ] );
+                inLogEntry.setField( 'externalLastSynchronised', theExternalLastSynchronised );
+                continue;
+            }
+            var theInternalTiddler = store.getTiddler( theExternalTiddler.title );
+            if ( theInternalTiddler == null ) {
+                if ( me.isDeleted( theExternalTiddler ) ) {
+                    externalUpdateNeeded = true;
+                    inLogEntry.addExternalDeletion( theExternalTiddler );
+                } else {
+                    me.createTiddler( theExternalTiddler );
+                    inLogEntry.addInternalCreation( theExternalTiddler );
+                }
+            } else {
+                var theInternalChangeCount = theInternalTiddler.fields[ 'changecount' ];
+                if ( theInternalChangeCount === undefined ) {
+                    theInternalChangeCount = 0;
+                }
+                theInternalChangeCount = parseInt( theInternalChangeCount, 10 );
+                var theExternalChangeCount = theExternalTiddler.fields[ 'changecount' ];
+                if ( theExternalChangeCount === undefined ) {
+                    theExternalChangeCount = 0;
+                }
+                var theExternalChangeCount = parseInt( theExternalChangeCount, 10 );
+                if ( theInternalChangeCount == theExternalChangeCount ) {
+                    if ( me.isConflicted(
+                             theInternalTiddler, theExternalTiddler ) ) {
+                         if ( theExternalTiddler.fields[ 'tiddlynotesmodified' ] - theInternalTiddler.fields[ 'tiddlynotesmodified' ] &gt; 0 ) {
+                             me.updateTiddler(
+                                theInternalTiddler, theExternalTiddler );
+                             inLogEntry.addInternalConflictModification( theInternalTiddler, theExternalTiddler );
+                         } else {
+                             externalUpdateNeeded = true;
+                             inLogEntry.addExternalConflictModification( theInternalTiddler, theExternalTiddler );
+                         }
+                    }
+                } else if ( theExternalChangeCount &gt; theInternalChangeCount ) {
+                    inLogEntry.addInternalModification( theInternalTiddler, theExternalTiddler );
+                    me.updateTiddler( theInternalTiddler, theExternalTiddler );
+                } else {
+                    externalUpdateNeeded = true;
+                    inLogEntry.addExternalModification( theInternalTiddler, theExternalTiddler );
+                }
+            }
+        }
+
+        if ( inSyncType == "SyncKeepRemote" ) {
+            return false;
+        } else if ( inSyncType == "SyncKeepBoth" ) {
+            return true;
+        }
+
+        if ( theExternalLastSynchronised == null ) {
+            theExternalLastSynchronised = new Date( 0 );
+            inLogEntry.setField( 'externalLastSynchronised', theExternalLastSynchronised );
+            externalUpdateNeeded = true;
+        }
+
+        var theInternalTiddlers = store.getTiddlers( &quot;title&quot;, &quot;systemConfig&quot; );
+        for ( var theIndex = 0; theIndex &lt; theInternalTiddlers.length; theIndex ++ ) {
+            var theInternalTiddler = theInternalTiddlers[ theIndex ];
+            var theExternalTiddler =
+                theExternalStore.getTiddler( theInternalTiddler.title );
+            if ( me.shouldExclude( theInternalTiddler ) ) {
+                continue;
+            }
+            if ( theExternalTiddler == null ) {
+                if ( theInternalTiddler.fields[ 'tiddlynotesmodified' ] == null ) {
+                    if ( theInternalTiddler.modified != null ) {
+                        theInternalTiddler.fields[ 'tiddlynotesmodified' ] =
+                            me.date2String( theInternalTiddler.modified );
+                    } else {
+                        theInternalTiddler.fields[ 'tiddlynotesmodified' ] =
+                            me.date2String( theInternalTiddler.created );
+                    }
+                }
+                if ( Date.convertFromYYYYMMDDHHMMSS( theInternalTiddler.fields[ 'tiddlynotesmodified' ] ) &gt; theInternalLastSynchronised ) {
+                    externalUpdateNeeded = true;
+                    inLogEntry.addExternalCreation( theInternalTiddler );
+                    inLogEntry.addUpload( theInternalTiddler );
+                } else {
+                    inLogEntry.addInternalDeletion( theInternalTiddler );
+                    store.removeTiddler( theInternalTiddler.title );
+                    story.closeTiddler( theInternalTiddler.title,true );
+                    config.macros.tiddlyNotesSync.mInternalStoreUpdated = true; 
+                }
+            } else {
+                inLogEntry.addUpload( theInternalTiddler );
+            }
+        }
+        return externalUpdateNeeded;
+    },
+    updateTiddler: function( inInternalTiddler, inExternalTiddler ) {
+        inInternalTiddler.title = inExternalTiddler.title;
+        inInternalTiddler.text = inExternalTiddler.text;
+        inInternalTiddler.modifier = inExternalTiddler.modifier;
+        inInternalTiddler.modified = inExternalTiddler.modified;
+        inInternalTiddler.tags = inExternalTiddler.tags;
+        inInternalTiddler.fields = inExternalTiddler.fields;
+        inInternalTiddler.creator = inExternalTiddler.creator;
+        inInternalTiddler.created = inExternalTiddler.created;
+        config.macros.tiddlyNotesSync.mInternalStoreUpdated = true;
+    },
+    shouldExclude: function( inTiddler ) {
+        if ( inTiddler == null ) {
+            return false;
+        }
+        if (store.isShadowTiddler( inTiddler.title ) ) {
+            return true;
+        }
+        if ( inTiddler.isTagged( &quot;tiddlyNotesLog&quot; ) ||
+             inTiddler.isTagged( &quot;tiddlyNotesExclude&quot; ) ) {
+            return true;
+        }
+        return false;
+    }
+}</pre>
+</div>
+</div>
