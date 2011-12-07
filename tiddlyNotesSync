@@ -280,7 +280,7 @@ SyncStore.prototype.shouldExclude = function( inTiddler ) {
     if ( inTiddler == null ) {
         return false;
     }
-    if (store.isShadowTiddler( inTiddler.title ) ) {
+    if (store.isShadowTiddler( inTiddler.title ) &amp;&amp; inTiddler.title != &quot;MainMenu&quot; ) {
         return true;
     }
     if ( inTiddler.title == &quot;tiddlyNotesSync&quot; ) {
@@ -636,6 +636,7 @@ config.macros.tiddlyNotesSync = {
         var isEmpty = story.isEmpty();
         if ( isEmpty != null &amp;&amp; ! isEmpty ) {
             story.refreshAllTiddlers( false );
+            refreshDisplay();
         }
         if ( externalUpdateNeeded ) {
             theSyncStore.update();
@@ -721,11 +722,11 @@ config.macros.tiddlyNotesSync = {
         var theInternalTiddlers = store.getTiddlers( &quot;title&quot;, &quot;systemConfig&quot; );
         for ( var theIndex = 0; theIndex &lt; theInternalTiddlers.length; theIndex ++ ) {
             var theInternalTiddler = theInternalTiddlers[ theIndex ];
-            var theExternalTiddler =
-                theExternalStore.getTiddler( theInternalTiddler.title );
             if ( me.shouldExclude( theInternalTiddler ) ) {
                 continue;
             }
+            var theExternalTiddler =
+                theExternalStore.getTiddler( theInternalTiddler.title );
             if ( theExternalTiddler == null ) {
                 if ( theInternalTiddler.fields[ 'tiddlynotesmodified' ] == null ) {
                     if ( theInternalTiddler.modified != null ) {
@@ -767,7 +768,7 @@ config.macros.tiddlyNotesSync = {
         if ( inTiddler == null ) {
             return false;
         }
-        if (store.isShadowTiddler( inTiddler.title ) ) {
+        if (store.isShadowTiddler( inTiddler.title ) &amp;&amp; inTiddler.title != &quot;MainMenu&quot; ) {
             return true;
         }
         if ( inTiddler.isTagged( &quot;tiddlyNotesLog&quot; ) ||
