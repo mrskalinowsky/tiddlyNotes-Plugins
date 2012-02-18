@@ -247,7 +247,7 @@ function SyncStore() {
         var docURL = document.URL;
         var docPathComponents = docURL.split( '/' );
         var fileNameComponents = docPathComponents[docPathComponents.length-1].split( '.' );
-        var fileName = docPathComponents[0];
+        var fileName = fileNameComponents[0];
         if ( config.browser.isGecko &amp;&amp; config.browser.isWindows ) {
             this.mPath = dropboxDir + &quot;\\&quot; + fileName + &quot;.xml&quot;;
         } else {
